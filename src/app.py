@@ -26,7 +26,7 @@ def carregar_dados():
         with open("data/produtos_financeiros.json", "r", encoding="utf-8") as f:
             produtos = json.load(f)
             
-        # O "Pulo do Gato" Matemático: Calculando o saldo líquido real
+        # Calculando o saldo líquido real
         entradas = df_transacoes[df_transacoes['tipo'] == 'entrada']['valor'].sum()
         saidas = df_transacoes[df_transacoes['tipo'] == 'saida']['valor'].sum()
         saldo_livre = entradas - saidas
@@ -72,29 +72,61 @@ def montar_system_prompt():
     return prompt
 
 # ==========================================
-# 4. CONFIGURAÇÃO DA API DO GEMINI
+# 4. CONFIGURAÇÃO DA API (AUTO-DISCOVERY SEGURO)
 # ==========================================
-# Para testar localmente, você pode colocar sua chave da API do Google Gemini aqui na barra lateral
 api_key = st.sidebar.text_input("Insira sua API Key do Google Gemini:", type="password")
 
 if api_key:
     genai.configure(api_key=api_key)
     
-    # Inicializando o modelo
-    modelo = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        system_instruction=montar_system_prompt()
-    )
+    try:
+        # Pede para o Google listar os modelos autorizados para essa chave
+        modelos_disponiveis = [
+            m.name for m in genai.list_models() 
+            if 'generateContent' in m.supported_generation_methods
+        ]
+        
+        if not modelos_disponiveis:
+            st.error("Sua API Key não tem acesso a modelos de texto.")
+            st.stop()
+            
+        # FORÇA a busca pelo modelo "flash" para não estourar a cota gratuita
+        modelo_escolhido = None
+        for m in modelos_disponiveis:
+            if "gemini-1.5-flash" in m:
+                modelo_escolhido = m
+                break
+        
+        # Plano B: se não achar o 1.5 exato, pega qualquer um que tenha "flash"
+        if not modelo_escolhido:
+            for m in modelos_disponiveis:
+                if "flash" in m.lower():
+                    modelo_escolhido = m
+                    break
+                    
+        # Plano C: se a conta for restrita e não tiver o flash, pega o primeiro da lista
+        if not modelo_escolhido:
+            modelo_escolhido = modelos_disponiveis[0]
+            
+        # Inicializa o modelo dinamicamente com o que achou
+        modelo = genai.GenerativeModel(model_name=modelo_escolhido)
+        
+    except Exception as e:
+        st.error(f"Erro de conexão com a API: {e}")
+        st.stop()
 
     # ==========================================
-# 5. LÓGICA DO CHAT DA INTERFACE
-# ==========================================
-    # Criando o histórico de mensagens na sessão do Streamlit
+    # 5. LÓGICA DO CHAT DA INTERFACE
+    # ==========================================
+    # Injetando o prompt no histórico de forma invisível
     if "chat_session" not in st.session_state:
-        st.session_state.chat_session = modelo.start_chat(history=[])
+        st.session_state.chat_session = modelo.start_chat(history=[
+            {"role": "user", "parts": [montar_system_prompt()]},
+            {"role": "model", "parts": ["Entendido! Analisei os arquivos e estou pronto para atuar como o ALVO."]}
+        ])
 
-    # Exibir as mensagens anteriores na tela
-    for mensagem in st.session_state.chat_session.history:
+    # Exibir as mensagens anteriores na tela (ignorando a instrução do sistema)
+    for mensagem in st.session_state.chat_session.history[2:]:
         papel = "user" if mensagem.role == "user" else "assistant"
         with st.chat_message(papel):
             st.markdown(mensagem.parts[0].text)
@@ -111,9 +143,12 @@ if api_key:
         with st.chat_message("assistant"):
             resposta_placeholder = st.empty()
             with st.spinner("O ALVO está calculando..."):
-                resposta = st.session_state.chat_session.send_message(entrada_usuario)
-                resposta_placeholder.markdown(resposta.text)
+                try:
+                    resposta = st.session_state.chat_session.send_message(entrada_usuario)
+                    resposta_placeholder.markdown(resposta.text)
+                except Exception as e:
+                    st.error(f"Erro ao gerar a resposta: {e}")
 
 else:
     st.warning("👈 Por favor, insira sua API Key do Gemini na barra lateral para iniciar o assistente.")
-    st.info("Dica: Você pode gerar uma chave gratuita no site do Google AI Studio.")
+    st.info("Dica: Você pode gerar uma chave gratuita no site aistudio.google.com")
